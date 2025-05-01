@@ -92,11 +92,27 @@ let rec typecheck_with_env (env : env) (e : expr): fbtype =
       TRec typed_fields
   
   |  Select (field, expr) ->
-      match expr with
-      |  [] -> failwith ("Field not found in the record")
-      |  (lab, selected) :: tl -> if (lab = field)
-                                    then selected
-                                  else typecheck_with_env env tl
+      let t = typecheck_with_env env expr in
+      (match t with
+      |  TRec fields ->
+          (match List.assoc_opt field fields with
+          |  Some ty -> ty
+          |  None -> failwith ("Field not found in the record"))
+      |  _ -> failwith ("Type error in Select: expression not a Record"))
+    
+  |  Ref (expr) ->
+      let t = (typecheck_with_env env expr) in
+      TRef t
+
+  |  Set (e1, e2) ->
+      let t1 = typecheck_with_env env e1 in
+      let t2 = typecheck_with_env env e2 in
+      (match t1 with
+      |  TRef inner_ty ->
+          if equal_fbtype inner_ty t2 then inner_ty
+          else failwith ("Type error in Set: expected type " ^ show_fbtype inner_ty ^
+                         " but got " ^ show_fbtype t2)
+      |  _ -> failwith ("Type error in Set: expected a reference type, but got " ^ show_fbtype t1))
 
   |  _ -> raise TypecheckerNotImplementedException
 
