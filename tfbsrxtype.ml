@@ -19,6 +19,30 @@ let rec lookup_env (x : ident) (env : env) : fbtype option =
  *) 
 let typecheck_default_enabled = true;;
 
+let merge_types t1 t2 =
+  match t1, t2 with
+  | TBottom, t | t, TBottom -> t
+  | _ ->
+      if equal_fbtype t1 t2 then t1
+      else failwith ("Type error: incompatible types " ^ show_fbtype t1 ^ " and " ^ show_fbtype t2)
+      
+let rec is_compatible t1 t2 =
+  match t1, t2 with
+  |  TBottom, _ | _, TBottom -> true
+  |  TArrow (t11,t12), TArrow (t21,t22) ->
+      is_compatible t11 t21 && is_compatible t12 t22
+  |  TRef r1, TRef r2 -> is_compatible r1 r2
+  |  TRec fields1, TRec fields2 ->
+      let order (Lab l1,_) (Lab l2,_) = compare l1 l2 in
+      let fields1 = List.sort order fields1 in
+      let fields2 = List.sort order fields2 in
+      (try 
+        List.for_all2 (fun (Lab l1, ty1) (Lab l2, ty2) -> l1 = l2 && is_compatible ty1 ty2) 
+          fields1 fields2 
+      with
+      | Invalid_argument _ -> false)
+  |  _ -> equal_fbtype t1 t2
+
 let rec typecheck_with_env (env : env) (e : expr): fbtype =
   match e with
   |  Int _ -> TInt
@@ -59,18 +83,20 @@ let rec typecheck_with_env (env : env) (e : expr): fbtype =
       let t1 = typecheck_with_env env e1 in
       let t2 = typecheck_with_env env e2 in
       let t3 = typecheck_with_env env e3 in
-      if not (equal_fbtype t1 TBool) then failwith ("Type error in If: expected the first expression to be TBool")
-      else if not (equal_fbtype t2 t3) then failwith ("Type error in If: expected the second expression to match the third")
-      else t3
+      if not (equal_fbtype t1 TBool) then
+        failwith ("Type error in If: expected the first expression to be TBool")
+      else
+        merge_types t2 t3
   |  Function (x, tx, body) ->
       let extended_env = extend_env x tx env in
       let body_type = typecheck_with_env extended_env body in
       TArrow (tx, body_type)
+      
   |  Appl (e1, e2) ->
       let t1 = typecheck_with_env env e1 in
       let t2 = typecheck_with_env env e2 in
       (match t1 with
-      |  TArrow (arg, ret) ->  if (equal_fbtype arg t2) then ret
+      |  TArrow (arg, ret) ->  if (is_compatible arg t2) then ret
                                else failwith ("Type error in Appl: expected the function's argument type to match the actual argument's type")
       |  _ -> failwith ("Type error in Appl: expected the first argument to be a function"))
   
@@ -113,6 +139,24 @@ let rec typecheck_with_env (env : env) (e : expr): fbtype =
           else failwith ("Type error in Set: expected type " ^ show_fbtype inner_ty ^
                          " but got " ^ show_fbtype t2)
       |  _ -> failwith ("Type error in Set: expected a reference type, but got " ^ show_fbtype t1))
+  
+  |  Get (e) ->
+      let t = typecheck_with_env env e in
+      (match t with
+      |  TRef inner_ty -> inner_ty
+      |  _ -> failwith ("Type error in Get: expected a reference type, but got " ^ show_fbtype t))
+
+  |  Raise (exnid, t, e) ->
+      let t_e = typecheck_with_env env e in
+      if is_compatible t t_e then TBottom
+      else failwith ("Type error in Raise: expected exception payload of type " ^ show_fbtype t ^
+                     ", but got " ^ show_fbtype t_e)
+
+  |  Try (e1, exn_name, ident, fbtype, e2) ->
+    let extended_env = extend_env ident fbtype env in
+    let t1 = typecheck_with_env env e1 in
+    let t2 = typecheck_with_env extended_env e2 in
+    merge_types t1 t2
 
   |  _ -> raise TypecheckerNotImplementedException
 
